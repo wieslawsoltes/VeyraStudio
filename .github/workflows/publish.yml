@@ -20,60 +20,65 @@ permissions:
   contents: read
 concurrency:
   group: veyra-pages-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       source_sha: ${{ steps.source.outputs.sha }}
-      ready: ${{ steps.source.outputs.ready }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source_ref || github.sha }}
       - id: source
         run: |
+          test -f public/studio/app.js
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          if test -f public/studio/app.js; then echo 'ready=true' >> "$GITHUB_OUTPUT"; else echo 'ready=false' >> "$GITHUB_OUTPUT"; fi
       - uses: actions/setup-node@v4
-        if: steps.source.outputs.ready == 'true'
         with:
           node-version: '22'
       - name: Engine, server, browser storage and build tests
-        if: steps.source.outputs.ready == 'true'
         run: node --test tests/core/*.test.mjs
       - name: Package standalone libraries
-        if: steps.source.outputs.ready == 'true'
         run: node scripts/package-libraries.mjs
       - name: Build static browser-local edition
-        if: steps.source.outputs.ready == 'true'
         env:
           VEYRA_BUILD_SHA: ${{ steps.source.outputs.sha }}
         run: node scripts/build-pages.mjs
       - name: Install isolated browser test runtime
-        if: steps.source.outputs.ready == 'true'
         run: |
           npm install --prefix "$RUNNER_TEMP/veyra-browser" --ignore-scripts --no-audit --no-fund playwright@1.55.0
-          node "$RUNNER_TEMP/veyra-browser/node_modules/playwright/cli.js" install --with-deps chromium
           echo "PLAYWRIGHT_MODULE=$RUNNER_TEMP/veyra-browser/node_modules/playwright/index.mjs" >> "$GITHUB_ENV"
+          if command -v google-chrome >/dev/null; then
+            echo "PLAYWRIGHT_EXECUTABLE=$(command -v google-chrome)" >> "$GITHUB_ENV"
+            google-chrome --version
+          else
+            node "$RUNNER_TEMP/veyra-browser/node_modules/playwright/cli.js" install --with-deps chromium
+          fi
       - name: Browser workflows and real export/decode
-        if: steps.source.outputs.ready == 'true'
-        run: node tests/browser/smoke.mjs
+        run: timeout 100s node tests/browser/smoke.mjs
+      - name: Package source checkout
+        if: always()
+        run: |
+          mkdir -p artifacts
+          git archive --format=zip --prefix=VeyraStudio/ --output=artifacts/veyra-studio-source.zip HEAD
       - uses: actions/upload-artifact@v4
-        if: always() && steps.source.outputs.ready == 'true'
+        if: always()
         with:
           name: veyra-validation-and-packages
           path: |
             artifacts/
             releases/*.tgz
       - uses: actions/upload-pages-artifact@v3
-        if: success() && steps.source.outputs.ready == 'true' && github.event_name != 'pull_request'
+        if: success() && github.event_name != 'pull_request'
         with:
           path: dist/pages
   deploy:
     needs: verify
-    if: needs.verify.outputs.ready == 'true' && github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       pages: write
       id-token: write
@@ -89,6 +94,7 @@ jobs:
   check-live:
     needs: [verify, deploy]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       VEYRA_TEST_URL: ${{ needs.deploy.outputs.page_url }}
       VEYRA_BUILD_SHA: ${{ needs.verify.outputs.source_sha }}
@@ -104,10 +110,15 @@ jobs:
       - name: Install isolated browser test runtime
         run: |
           npm install --prefix "$RUNNER_TEMP/veyra-browser" --ignore-scripts --no-audit --no-fund playwright@1.55.0
-          node "$RUNNER_TEMP/veyra-browser/node_modules/playwright/cli.js" install --with-deps chromium
           echo "PLAYWRIGHT_MODULE=$RUNNER_TEMP/veyra-browser/node_modules/playwright/index.mjs" >> "$GITHUB_ENV"
+          if command -v google-chrome >/dev/null; then
+            echo "PLAYWRIGHT_EXECUTABLE=$(command -v google-chrome)" >> "$GITHUB_ENV"
+            google-chrome --version
+          else
+            node "$RUNNER_TEMP/veyra-browser/node_modules/playwright/cli.js" install --with-deps chromium
+          fi
       - name: Test the live Pages editor
-        run: node tests/browser/smoke.mjs
+        run: timeout 100s node tests/browser/smoke.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
