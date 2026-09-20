@@ -1,0 +1,95 @@
+name: Complete Veyra source and publish
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/complete-source.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Restore source and sample audio with SHA-256 verification
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64,concurrent.futures,hashlib,io,json,lzma,os,pathlib,subprocess,tarfile,tempfile,urllib.request
+          root=pathlib.Path.cwd()
+          shas='''de5c824cff2b1d08b133c91fae96a332852e3b2d 0c0108895d76d1109dfb7f5e57b02f05ea37c72d c8bccb6d2754dd98461d5f316950dd0870cfe65a 7a6cceb9cb571a28b5985733546d16380209e487 8e4824fdd152d4070df1301a4b1c1d2f0a4478fb 9251dcd709a404d7b0b8238396859ab09bc176b4 c9fb5d4439b7a2c2e30f8a4f0bb93e7961eaec76 a2258572162d69ad07ba9da22189e8b8f4b078e2 49ad4f4583a0e8cd5e3adc40dd52db7cebd4a7ed 92201379163e48dc9cd5bfc084e25ccd7fcb2eac 255e3637e6c6ebc051d9a91571ff2656e2da7744'''.split()
+          archive_hash='175d3a275fd9f295fc1d245504667ba86b28b18f98380bcb94053b356306e61a'
+          def fetch(sha):
+              request=urllib.request.Request('https://api.github.com/repos/'+os.environ['GITHUB_REPOSITORY']+'/git/blobs/'+sha,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json'})
+              with urllib.request.urlopen(request,timeout=60) as response: data=base64.b64decode(json.load(response)['content'])
+              assert hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()==sha,'Blob checksum mismatch'
+              return data
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool: packed=b''.join(pool.map(fetch,shas))
+          assert hashlib.sha256(packed).hexdigest()==archive_hash,'Archive checksum mismatch'
+          data=lzma.decompress(packed)
+          assert len(data)<16*1024*1024,'Archive size limit exceeded'
+          seen=set()
+          def write(item,content):
+              name=item['path']; p=pathlib.PurePosixPath(name)
+              assert not p.is_absolute() and '..' not in p.parts and '\\' not in name and p.parts[0] not in ('.git','.github') and name not in seen,'Unsafe source path'
+              assert hashlib.sha256(content).hexdigest()==item['sha256'],name+' checksum mismatch'
+              target=root/name; target.parent.mkdir(parents=True,exist_ok=True)
+              assert not target.is_symlink(),'Unexpected symlink'
+              if target.exists(): assert target.read_bytes()==content,name+' already changed'
+              target.write_bytes(content); target.chmod(0o755 if name.endswith('.sh') else 0o644); seen.add(name)
+          with tarfile.open(fileobj=io.BytesIO(data),mode='r:') as archive:
+              manifest=json.load(archive.extractfile('TRANSFER.json'))
+              expected={item['path']:item for item in manifest['files']}
+              assert len(expected)==len(manifest['files'])
+              for member in archive:
+                  if member.name=='TRANSFER.json': continue
+                  assert member.isfile() and member.name in expected,'Unexpected archive member'
+                  write(expected[member.name],archive.extractfile(member).read())
+              assert seen==set(expected),'Archive is incomplete'
+          # One-time, pinned copy of byte-identical build helpers. Regular builds
+          # use only this repository; no code from the other application is used.
+          common_repo='wieslawsoltes/TesseraStudio'
+          common_commit='c5db1f3ddfbb04c1e1dee7347644ba771398c5ab'
+          with tempfile.TemporaryDirectory() as temp:
+              subprocess.run(['git','init','--quiet',temp],check=True)
+              subprocess.run(['git','-C',temp,'fetch','--quiet','--depth=1','https://github.com/'+common_repo+'.git',common_commit],check=True)
+              subprocess.run(['git','-C',temp,'checkout','--quiet','--detach','FETCH_HEAD'],check=True)
+              for item in manifest['common']:
+                  source=pathlib.Path(temp)/item['path']; assert not source.is_symlink()
+                  write(item,source.read_bytes())
+          old=json.loads((root/'docs/SOURCE-IMPORT.json').read_text())
+          missing=[name for name in old['missing'] if not (root/name).is_file()]
+          assert not missing,missing
+          report={'status':'source-complete','initialRecovery':old,'completionArchiveSHA256':archive_hash,'verifiedCompletionFiles':manifest['files']+manifest['common'],'commonHelperCommit':common_commit,'missing':missing,'note':'Demo image and 24-second score are optimized AVIF/Opus derivatives. All source and build helpers are vendored. GitHub Pages uses browser-local project and media storage; multi-user collaboration requires the included server.'}
+          (root/'docs/SOURCE-IMPORT.json').write_text(json.dumps(report,indent=2)+'\n')
+          print('Verified and restored',len(seen),'remaining source and sample files')
+          PY
+      - name: Validate engine, server, browser storage and static build
+        run: node --test tests/core/*.test.mjs
+      - name: Rebuild standalone packages
+        run: |
+          node scripts/package-libraries.mjs
+          mkdir -p standalone-packages
+          cp releases/*.tgz standalone-packages/
+      - name: Commit complete source without rewriting history
+        id: commit
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add --all
+          git diff --cached --quiet || git commit -m 'feat: complete Veyra Studio engine, controls, server and browser-local Pages edition'
+          git push origin HEAD:main
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+  publish:
+    needs: restore
+    uses: ./.github/workflows/publish.yml
+    with:
+      source_ref: ${{ needs.restore.outputs.source_sha }}
