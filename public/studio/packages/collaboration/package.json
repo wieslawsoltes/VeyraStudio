@@ -1,0 +1,13 @@
+{
+  "name": "@veyra/collaboration",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./browser": "./browser.js",
+    "./server": "./server.js"
+  },
+  "license": "MIT",
+  "description": "Reusable Veyra Studio collaboration package"
+}

@@ -1,0 +1,1 @@
+{"name":"@veyra/core","version":"0.1.0","type":"module","main":"index.js","exports":"./index.js","license":"MIT","description":"Framework-independent non-linear timeline, history, interchange and merge primitives"}
