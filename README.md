@@ -1,92 +1,83 @@
 # Veyra Studio
 
-A plain HTML and JavaScript video editing workspace with reusable ES modules, a WebGPU color pipeline, multitrack editing, browser media decoding, Web Audio mixing, shared projects, and real-time video export.
+A browser-native video editing, color, compositing and audio workspace. The editor uses plain HTML, CSS and native JavaScript modules. Rendering combines Canvas scene composition with a WebGPU/WGSL color pipeline and a CPU/Canvas fallback.
 
-**This is version 0.1.0: a working browser implementation, not complete DaVinci Resolve parity or a production-qualified finishing system.** Read [CAPABILITIES](docs/CAPABILITIES.md) for the exact boundaries.
+**[Open the GitHub Pages app](https://wieslawsoltes.github.io/VeyraStudio/)** · [Validation and deployment](https://github.com/wieslawsoltes/VeyraStudio/actions/workflows/publish.yml)
 
-## GitHub Pages
+Veyra is an independent application with a Resolve-inspired workspace, not a Blackmagic product. **Full DaVinci Resolve feature and UI parity remains unfinished. This is not a production-qualified replacement.** See [capabilities and limits](docs/CAPABILITIES.md).
 
-**[Open the public editor](https://wieslawsoltes.github.io/VeyraStudio/)**
+## Run locally
 
-The Pages edition stores projects and imported media **in IndexedDB in this browser**, not on a server. Use Ctrl/Command+S or File > Save project to create a persistent local project. Later edits autosave. Project IDs, media blobs, and revisions survive reloads. Other tabs in the same browser profile receive revision-checked updates with the existing four-second polling/merge engine.
+Use Node.js 22.13 or newer. The local application has no installation step:
 
-The **Local workspace** dialog deliberately does not offer online invitations: GitHub Pages does not run the database/authentication/media API. Multi-user collaboration remains available in the separately hosted server edition. Clearing browser site data removes local projects and media. Project-file downloads contain edit decisions and references, not embedded media: retain original media and relink when moving to another browser/device.
+```sh
+node server/local.mjs
+```
 
-Build the static edition without installing dependencies:
+Open **http://localhost:8080**. Projects use SQLite and media files under `.veyra-data/`, which is excluded from Git. This server binds to loopback and uses a single local owner identity; it is not an authenticated public multi-user service.
+
+## GitHub Pages edition
+
+The public site runs entirely in your browser, including editing, rendering and supported video exports. IndexedDB stores projects, revisions, review notes and imported media Blobs. Same-origin tabs in the same browser synchronize through revision-checked polling. Project-relative asset URLs work under `/VeyraStudio/`.
+
+**Pages does not provide remote multi-user collaboration or server authentication.** The server-backed collaboration implementation is included separately for deployment with trusted identities, a database and object storage. GitHub Pages is not a replacement for that backend.
+
+Clearing browser site data deletes browser-local projects and media. Export project JSON and retain the original media as backups. Project JSON does not embed media; moving projects to another browser requires relinking those files.
+
+To build and serve the static edition:
 
 ```sh
 node scripts/build-pages.mjs
 python3 -m http.server 8080 --directory dist/pages
 ```
 
-Open http://localhost:8080. The build is relocatable under `/VeyraStudio/` or another subpath. The original server entry point is not overwritten. Regular pushes to `main` validate the engine, packages, browser workflows, and static build before deployment; a post-deploy browser check verifies the public site.
+Open http://localhost:8080. The static build uses no framework or bundler. The original hosted adapter remains under `app/`, `server/` and the Cloudflare configuration; it is not needed to run Pages or the local Node server.
 
-## Run the complete app locally
+## Implemented workflows
 
-Install **Node.js 22.13 or newer**, extract this repository, and run:
+- Media, Cut, Edit, Fusion, Color, Audio and Deliver workspaces; media pool, viewers, inspector and multitrack timeline, with desktop and narrow-screen layouts.
+- Media import, source in/out points, append, clip movement and trimming, splitting, duplication, deletion/ripple deletion, snapping, track locks, markers and undo/redo.
+- Editable titles, clip transforms, opacity and linear keyframes; WebGPU or CPU color adjustments, histogram, presets and a limited serial Color/Blur/Monochrome node chain.
+- Audio voices, waveforms, gain, pan, fades, track mute/solo and shelf EQ. Real-time MediaRecorder export with mixed audio in browser-supported WebM/MP4 formats; snapshots, basic EDL, SRT and project JSON.
+- Server-side project/media membership checks, optimistic revisions, three-way object merging, explicit conflicts, presence and timestamped comments. Server synchronization polls every four seconds; browser-local Pages synchronization is separate.
 
-```sh
-node server/local.mjs
-```
+The coastal sample contains animated stills, titles and a 24-second ambient score. The repository uses optimized AVIF and mono Opus derivatives of the original sample media. This is demonstration media, not a fidelity or codec qualification benchmark. Import your own footage for moving-video editing.
 
-Open **http://localhost:8080**. No dependency installation is needed for this local mode. It serves the plain HTML/JS application, persists projects in SQLite, and stores uploaded media on disk. It binds to loopback and uses one local owner identity. It is not a multi-user internet authentication server. Set `VEYRA_PORT` to change the port. Data is stored in `.veyra-data/` next to the repository; preserve that directory to keep your local projects.
+## Reusable packages
 
-The app opens an editable sample, **North of everywhere**: animated coastal stills, two titles, keyframes, and an original ambient score. This is a still-image edit, not a demonstration of decoded moving footage. Import your own video to edit moving footage.
-
-## Editing workflow
-
-1. Use **Import media** or drop files in the Media pool. Browser-supported video, audio, and image files are accepted, up to 100 MB each for cloud upload.
-2. Click a source to inspect it. Double-click to append, or drag it onto a timeline track. Source I/O points constrain the appended range.
-3. Move clips, drag their edges to trim, use **B** for the blade, or **Ctrl/⌘ B** to split at the playhead. Use selection, duplicate, delete, ripple delete, markers, snapping, and undo/redo.
-4. Adjust the selected clip in **Inspector**. Transform, opacity, gain and pan can have keyframes. Add a title with **T** in the timeline toolbar and edit its text, font, color and size.
-5. Use **Color** for primary adjustments, wheels and a live RGB histogram. Use **Fusion** for a small processing chain with Color, Blur and Monochrome nodes. Use **Audio** for clip fades, track gain, mute/solo, shelf EQ and master output.
-6. **Save project** writes the project and source media to the server. Hosted collaborators join using a code supplied by the owner and must also have access to the hosted site.
-7. **Deliver** records the timeline in real time, including mixed audio, into a browser-supported WebM or MP4 file. Keep the tab visible. Rendering can be cancelled; the result is a downloadable video. Large renders need sufficient browser memory.
-
-Project downloads contain edit decisions and source references, not embedded video. Source blobs that have not been uploaded need relinking after reopening. Private hosted media requires authentication to its original project; project JSON is not a portable media archive. EDL export contains basic video cuts and timing. SRT export derives subtitle cues from title clips.
-
-## Standalone libraries
-
-The five authoring modules are in `public/studio/packages/` and use no UI framework:
-
-| Package | Purpose |
-| --- | --- |
-| `@veyra/core` | Timeline document, transactions, validation, selection, history, trims, splits, animation interpolation, merge, EDL and SRT |
-| `@veyra/renderer` | WebGPU/WGSL grading, canvas scene composition, playback, capture and export |
-| `@veyra/media` | Browser decoders, waveform analysis, media lifetime and Web Audio graph |
-| `@veyra/controls` | Framework-independent timeline control, safe text escaping and waveform SVG |
-| `@veyra/collaboration` | Revision synchronization, conflict handling and a portable server handler |
-
-Build independent npm tarballs with:
+| Package | Location | Responsibility |
+| --- | --- | --- |
+| `@veyra/core` | `public/studio/packages/core/` | Project model, validation, timecode, editing/history, keyframes, EDL/SRT and object merge |
+| `@veyra/renderer` | `public/studio/packages/renderer/` | Scene composition, GPU grading, playback and recording |
+| `@veyra/media` | `public/studio/packages/media/` | Media loading, metadata, waveform decoding and Web Audio voices |
+| `@veyra/controls` | `public/studio/packages/controls/` | Timeline control and parameter fields |
+| `@veyra/collaboration` | `public/studio/packages/collaboration/` | Server client, browser storage adapter and portable server handler |
 
 ```sh
 node scripts/package-libraries.mjs
+npm install ./releases/veyra-core-0.1.0.tgz
 ```
 
-They are written to `releases/veyra-*.tgz`. Each package includes any required shared core source internally and can be installed separately. They do not import the application. Renderer and controls require browser APIs; core and the portable server can run in Node. Prepared tarballs are available in the GitHub Actions build artifacts; `standalone-packages/` contains the initial publication builds.
+All five independently installable archives are generated under `releases/` and retained in validation artifacts. Checked-in distributions are under `standalone-packages/`; the Refresh standalone distributions workflow rebuilds and commits them without publishing to npm. Packaging vendors internal core imports, so no unpublished sibling dependency is required. See [API contracts](docs/API.md) and [architecture](docs/ARCHITECTURE.md).
 
-See [API documentation](docs/API.md), [architecture](docs/ARCHITECTURE.md), and [capability matrix](docs/CAPABILITIES.md). These are versioned package builds, not claims of npm registry publication or mature API compatibility with another product.
-
-## Hosted build
-
-The plain application lives in `public/studio/`. A minimal Vinext/Cloudflare adapter redirects `/` to the app and provides `/api/studio` and `/api/media`. This hosted adapter uses the scaffold's dependencies; the browser editor itself has no React dependency.
-
-```sh
-pnpm install --frozen-lockfile
-pnpm build
-pnpm test
-```
-
-Hosting declares logical `DB` and `BUCKET` bindings in `.openai/hosting.json`. D1 schema changes use generated Drizzle migrations in `drizzle/`; media bytes are stored separately. Hosted authentication uses the dispatcher-provided user identity. Every project and media operation checks membership server-side. Do not expose the hosted adapter directly to an untrusted proxy that lets clients forge identity headers.
-
-## Verification
+## Validation and publishing
 
 ```sh
 node --test tests/core/*.test.mjs
+node scripts/package-libraries.mjs
+node scripts/build-pages.mjs
 ```
 
-The included automated tests cover timeline/history behavior, split and trim keyframes, node cloning, merge conflicts, in-flight save/upload races, mixer initialization, persistent SQL operations, authorization, invitations, comments, and media access. See [VALIDATION](docs/VALIDATION.md) for verification performed and not performed.
+The publication workflow runs **39 automated Node tests** and Chromium-based browser workflows before deployment. Browser checks cover all seven workspaces, editing/history, persistent imported media, same-browser cross-tab revision synchronization and a real 320×180 WebM export that is decoded and checked for visible pixels.
 
-## License and assets
+After deployment, the workflow verifies the public commit and every static file's byte count and SHA-256 hash, then reruns the browser suite against the live Pages URL. Source ZIPs, standalone archives, screenshots, reports and an exported video are available in workflow artifacts. See [validation record and limits](docs/VALIDATION.md).
 
-Original application and library code is MIT licensed. Third-party scaffold dependencies retain their licenses. The sample coastline was generated for this project; the score was synthesized for it. For the public repository and Pages demo, the original full-resolution coastline is encoded as AVIF and the 24-second score as Opus to reduce transfer size. These are lossy demo-media conversions, not changes to user import/export formats. Original PNG/WAV media remain in the original source archive. Product names used in documentation identify the workflow reference only. No original application's proprietary code, icons, branding, or native project-format implementation is included.
+Browser validation uses the **Canvas 2D fallback**, not physical WebGPU hardware. It does not establish full native-project compatibility, professional codec coverage, calibrated color/HDR, audio finishing accuracy, deterministic offline output or large-project performance. Those remain separate qualification and implementation work.
+
+## Source recovery
+
+The complete source is checked into this repository. `docs/SOURCE-IMPORT.json` records checksum-verified recovery of the interrupted transfer and the pinned, byte-identical build scaffold. Ordinary builds use only this repository and do not fetch application code from another repository.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
