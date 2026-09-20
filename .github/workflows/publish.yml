@@ -1,0 +1,34 @@
+name: Publish Veyra Studio
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Pages configuration
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/${{ github.repository }}/pages || true
+      - name: Check original sample assets
+        run: |
+          python3 - <<'PY'
+          import urllib.request, hashlib
+          base = 'https://veyra-post-009fc4a88363.wisodev.chatgpt.site/studio/assets/'
+          for name in ('coast.png', 'north.wav'):
+              try:
+                  with urllib.request.urlopen(base + name, timeout=30) as response:
+                      content = response.read()
+                      print(name, response.status, response.headers.get('Content-Type'), len(content), hashlib.sha256(content).hexdigest(), content[:16].hex())
+              except Exception as exc:
+                  print(name, type(exc).__name__, str(exc))
+          PY
