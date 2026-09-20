@@ -18,7 +18,7 @@ jobs:
           run-id: 35532505353
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/veyra-recovered
-      - name: Verify recovered files and vendor matching scaffold
+      - name: Recover only checksum-verified files and matching scaffold
         env:
           RECOVERED: ${{ runner.temp }}/veyra-recovered/source
         run: |
@@ -31,11 +31,10 @@ jobs:
           manifest=json.loads(raw)
           assert manifest['commonRepository']=='wieslawsoltes/TesseraStudio'
           assert manifest['commonCommit']=='c5db1f3ddfbb04c1e1dee7347644ba771398c5ab'
-          seen=set(); restored=[]
+          seen=set(); restored=[]; rejected=[]
           def copy(item,base):
               name=item['path']; p=pathlib.PurePosixPath(name)
               assert not p.is_absolute() and '..' not in p.parts and '\\' not in name and p.parts[0] not in ('.git','.github') and name not in seen
-              seen.add(name)
               source=base/name
               assert source.is_file() and not source.is_symlink()
               data=source.read_bytes()
@@ -44,16 +43,20 @@ jobs:
               if target.exists(): assert target.read_bytes()==data,name+' already changed'
               target.write_bytes(data)
               target.chmod(0o755 if name.endswith('.sh') else 0o644)
-              restored.append(item)
+              seen.add(name); restored.append(item)
           for item in manifest['files']:
-              if (recovered/item['path']).is_file(): copy(item,recovered)
+              source=recovered/item['path']
+              if not source.is_file(): continue
+              if hashlib.sha256(source.read_bytes()).hexdigest()!=item['sha256']:
+                  rejected.append(item['path']); print('REJECTED damaged entry:',item['path']); continue
+              copy(item,recovered)
           with tempfile.TemporaryDirectory() as temp:
               subprocess.run(['git','init','--quiet',temp],check=True)
               subprocess.run(['git','-C',temp,'fetch','--quiet','--depth=1','https://github.com/'+manifest['commonRepository']+'.git',manifest['commonCommit']],check=True)
               subprocess.run(['git','-C',temp,'checkout','--quiet','--detach','FETCH_HEAD'],check=True)
               for item in manifest['common']: copy(item,pathlib.Path(temp))
           (root/'docs').mkdir(exist_ok=True)
-          (root/'docs/SOURCE-IMPORT.json').write_text(json.dumps({'manifest':manifest,'restored':restored,'missing':[x['path'] for x in manifest['files'] if x['path'] not in seen]},indent=2)+'\n')
+          (root/'docs/SOURCE-IMPORT.json').write_text(json.dumps({'manifest':manifest,'restored':restored,'rejected':rejected,'missing':[x['path'] for x in manifest['files'] if x['path'] not in seen]},indent=2)+'\n')
           print('Verified and restored',len(restored),'files')
           print('Remaining files:',[x['path'] for x in manifest['files'] if x['path'] not in seen])
           PY
@@ -62,5 +65,5 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add --all
-          git diff --cached --quiet || git commit -m 'feat: recover verified Veyra editor, optimized demo media and server scaffold'
+          git diff --cached --quiet || git commit -m 'feat: recover verified Veyra editor, optimized demo image and server scaffold'
           git push origin HEAD:main
