@@ -1,34 +1,115 @@
-name: Publish Veyra Studio
+name: Validate and publish Veyra Studio
 on:
-  workflow_dispatch:
   push:
     branches: [main]
+    paths:
+      - 'public/**'
+      - 'server/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'package.json'
+      - '.github/workflows/publish.yml'
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      source_ref:
+        type: string
+        required: false
 permissions:
   contents: read
-  pages: write
-  id-token: write
 concurrency:
-  group: pages
+  group: veyra-pages-${{ github.ref }}
   cancel-in-progress: false
 jobs:
-  prepare:
+  verify:
     runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+      ready: ${{ steps.source.outputs.ready }}
     steps:
-      - name: Check Pages configuration
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+      - id: source
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if test -f public/studio/app.js; then echo 'ready=true' >> "$GITHUB_OUTPUT"; else echo 'ready=false' >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/setup-node@v4
+        if: steps.source.outputs.ready == 'true'
+        with:
+          node-version: '22'
+      - name: Engine, server, browser storage and build tests
+        if: steps.source.outputs.ready == 'true'
+        run: node --test tests/core/*.test.mjs
+      - name: Package standalone libraries
+        if: steps.source.outputs.ready == 'true'
+        run: node scripts/package-libraries.mjs
+      - name: Build static browser-local edition
+        if: steps.source.outputs.ready == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          VEYRA_BUILD_SHA: ${{ steps.source.outputs.sha }}
+        run: node scripts/build-pages.mjs
+      - name: Install isolated browser test runtime
+        if: steps.source.outputs.ready == 'true'
         run: |
-          gh api repos/${{ github.repository }}/pages || true
-      - name: Check original sample assets
+          npm install --prefix "$RUNNER_TEMP/veyra-browser" --ignore-scripts --no-audit --no-fund playwright@1.55.0
+          node "$RUNNER_TEMP/veyra-browser/node_modules/playwright/cli.js" install --with-deps chromium
+          echo "PLAYWRIGHT_MODULE=$RUNNER_TEMP/veyra-browser/node_modules/playwright/index.mjs" >> "$GITHUB_ENV"
+      - name: Browser workflows and real export/decode
+        if: steps.source.outputs.ready == 'true'
+        run: node tests/browser/smoke.mjs
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.source.outputs.ready == 'true'
+        with:
+          name: veyra-validation-and-packages
+          path: |
+            artifacts/
+            releases/*.tgz
+      - uses: actions/upload-pages-artifact@v3
+        if: success() && steps.source.outputs.ready == 'true' && github.event_name != 'pull_request'
+        with:
+          path: dist/pages
+  deploy:
+    needs: verify
+    if: needs.verify.outputs.ready == 'true' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
+      - uses: actions/deploy-pages@v4
+        id: deployment
+  check-live:
+    needs: [verify, deploy]
+    runs-on: ubuntu-latest
+    env:
+      VEYRA_TEST_URL: ${{ needs.deploy.outputs.page_url }}
+      VEYRA_BUILD_SHA: ${{ needs.verify.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify.outputs.source_sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify public commit and all static file hashes
+        run: node tests/browser/deployed.mjs
+      - name: Install isolated browser test runtime
         run: |
-          python3 - <<'PY'
-          import urllib.request, hashlib
-          base = 'https://veyra-post-009fc4a88363.wisodev.chatgpt.site/studio/assets/'
-          for name in ('coast.png', 'north.wav'):
-              try:
-                  with urllib.request.urlopen(base + name, timeout=30) as response:
-                      content = response.read()
-                      print(name, response.status, response.headers.get('Content-Type'), len(content), hashlib.sha256(content).hexdigest(), content[:16].hex())
-              except Exception as exc:
-                  print(name, type(exc).__name__, str(exc))
-          PY
+          npm install --prefix "$RUNNER_TEMP/veyra-browser" --ignore-scripts --no-audit --no-fund playwright@1.55.0
+          node "$RUNNER_TEMP/veyra-browser/node_modules/playwright/cli.js" install --with-deps chromium
+          echo "PLAYWRIGHT_MODULE=$RUNNER_TEMP/veyra-browser/node_modules/playwright/index.mjs" >> "$GITHUB_ENV"
+      - name: Test the live Pages editor
+        run: node tests/browser/smoke.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: veyra-live-validation
+          path: artifacts/
