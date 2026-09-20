@@ -1,0 +1,53 @@
+name: Recover interrupted source transfer
+on:
+  push:
+    paths: ['.github/workflows/recover-transfer.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspect previously uploaded source objects
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p recovered
+          python3 - <<'PY'
+          import base64, concurrent.futures, hashlib, io, json, lzma, os, pathlib, tarfile, urllib.request
+          shas = '''2ce7162f9bfe0b22bbf003de30e36125ffcf086b bec62cdc851a2afcc7b20b10ca5e1873909f4946 e4686716b7b2572c3b346f35e0d1a7511542ac20 e28ccae070c084ff6804ef078086637f7814bcf9 56582254060d1ee4f34518cc07cb9592f957d308 7d4aae2c2517db764ba78a82cedcccb0a5621229 38383d2d5d708cac64fa91c47c17604483314695 a817a9e3893d3f58d089a79f364f69b4ddd09ea9 76eb2890f421b03d20e8532714db1880d81c24f4 db535b1ed1c217d05c02a8e48baaa5a2b4e6b1d1 a54bd2bb6052dce99b59f077604666961322daf6 1f1333653b6fd01fa53c2713cad7b619df336fef 029607d5ef401c635efc757404d128e592e5918e 12d5cf57ed7914cfebbe118b4e4a96bf0c93e48f 4918f93a8e1c93730979a3151457d74f74364362 4aac9285add31fcc04da72ae103ffb7c8f51f397 3d1b23b350cf317a45552fe81d705dcc180ed89d c50b93ffd52fd7173da3d016e7b14ef4ac39d562'''.split()
+          def fetch(sha):
+              req=urllib.request.Request('https://api.github.com/repos/'+os.environ['GITHUB_REPOSITORY']+'/git/blobs/'+sha,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json'})
+              with urllib.request.urlopen(req,timeout=60) as r: obj=json.load(r)
+              data=base64.b64decode(obj['content']); assert hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()==sha
+              return data
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool: chunks=list(pool.map(fetch,shas))
+          unpacker=lzma.LZMADecompressor(); output=bytearray(); failed=False
+          for n,chunk in enumerate(chunks):
+              for offset in range(0,len(chunk),128):
+                  try: output.extend(unpacker.decompress(chunk[offset:offset+128]))
+                  except (lzma.LZMAError,EOFError) as e:
+                      print('Stream stopped at chunk',n,'offset',offset,str(e)); failed=True; break
+              print('Chunk',n,'bytes',len(chunk),'recovered bytes',len(output),'EOF',unpacker.eof)
+              if failed: break
+          pathlib.Path('recovered/partial.tar').write_bytes(output)
+          report={'streamComplete':unpacker.eof,'files':[]}; root=pathlib.Path('recovered/source'); root.mkdir()
+          try:
+              archive=tarfile.open(fileobj=io.BytesIO(output),mode='r:')
+              for member in archive:
+                  p=pathlib.PurePosixPath(member.name)
+                  if not member.isfile() or p.is_absolute() or '..' in p.parts: continue
+                  data=archive.extractfile(member).read()
+                  if len(data)!=member.size: break
+                  dest=root/member.name; dest.parent.mkdir(parents=True,exist_ok=True); dest.write_bytes(data)
+                  row={'path':member.name,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()}; report['files'].append(row); print(json.dumps(row))
+          except (tarfile.TarError,EOFError) as e: print('Incomplete archive:',str(e))
+          pathlib.Path('recovered/report.json').write_text(json.dumps(report,indent=2))
+          print('Recovered complete file entries:',len(report['files']))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: recovered-source-audit
+          path: recovered/
+          include-hidden-files: true
